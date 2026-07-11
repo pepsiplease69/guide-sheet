@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-guide_sheet.py — generate a printable ruling guide sheet to slip UNDER
-translucent paper (Tomoe River, Midori MD, etc.). Lines are pure black so
-they show through the sheet on top.
+guide_sheet.py — printable ruling guide sheet to slip UNDER translucent
+paper (Tomoe River, Midori MD, etc.). Lines are pure black for show-through.
 
 Requires:  pip install reportlab
 """
@@ -38,9 +37,9 @@ def _clip(v, lo, hi):
 
 
 def draw_crop_marks(c, tx0, ty0, tx1, ty1, page_w, page_h, gap, width):
-    """Draw crop marks that run to the page edges, but ONLY along trim edges
-    that are interior to the page. Anything off-page is clipped away, so a
-    flush top-left layout yields marks along the right & bottom cuts only."""
+    """Crop marks running to the page edges, ONLY along trim edges that are
+    interior to the page (off-page portions clipped). Flush layouts therefore
+    mark just the real cut lines."""
     c.setDash()
     c.setLineWidth(width)
 
@@ -59,16 +58,83 @@ def draw_crop_marks(c, tx0, ty0, tx1, ty1, page_w, page_h, gap, width):
         if abs(xb - xa) > EPS:
             c.line(xa * mm, y * mm, xb * mm, y * mm)
 
-    # vertical cut lines (left/right) -> vertical marks above & below trim box
     for x, interior in ((tx0, interior_left), (tx1, interior_right)):
         if interior:
-            vline(x, ty1 + gap, page_h)   # extend up to top edge
-            vline(x, ty0 - gap, 0)        # extend down to bottom edge
-    # horizontal cut lines (bottom/top) -> horizontal marks left & right of box
+            vline(x, ty1 + gap, page_h)
+            vline(x, ty0 - gap, 0)
     for y, interior in ((ty0, interior_bottom), (ty1, interior_top)):
         if interior:
-            hline(y, tx1 + gap, page_w)   # extend right to right edge
-            hline(y, tx0 - gap, 0)        # extend left to left edge
+            hline(y, tx1 + gap, page_w)
+            hline(y, tx0 - gap, 0)
+
+
+def render_page(c, args, undersheet):
+    """Draw ONE guide page for the given undersheet onto canvas c.
+    Caller is responsible for showPage()."""
+    page_w, page_h = PHYSICAL_PAGE[args.page]
+    re_w, re_h     = REAL_ESTATE[args.size]
+
+    # ---- position the real estate on the physical page ----
+    if args.center:                          # printer-safe: centered
+        re_x0 = (page_w - re_w) / 2.0
+        re_y0 = (page_h - re_h) / 2.0
+    else:                                    # flush: always TOP; side depends
+        re_y0 = page_h - re_h                # touch top
+        if undersheet == "right":            # right-undersheet -> touch LEFT
+            re_x0 = 0.0
+        else:                                # left-undersheet  -> touch RIGHT
+            re_x0 = page_w - re_w
+
+    # ---- margins as fractions of the real-estate dimensions ----
+    top_m    = re_h * (1.0 / 9.0)
+    bottom_m = re_h * (2.0 / 9.0)
+    if undersheet == "right":
+        left_m, right_m = re_w * (1.0 / 9.0), re_w * (2.0 / 9.0)
+    else:
+        left_m, right_m = re_w * (2.0 / 9.0), re_w * (1.0 / 9.0)
+
+    # ---- writing area (page coords, mm; origin = bottom-left) ----
+    wa_x0 = re_x0 + left_m
+    wa_x1 = re_x0 + re_w - right_m
+    wa_y0 = re_y0 + bottom_m
+    wa_y1 = re_y0 + re_h - top_m
+
+    c.setStrokeColorRGB(0, 0, 0)             # pure black = darkest show-through
+    c.setFillColorRGB(0, 0, 0)
+
+    # 1) real-estate outline
+    if not args.no_frame:
+        c.setDash()
+        c.setLineWidth(args.frame_width)
+        c.rect(re_x0 * mm, re_y0 * mm, re_w * mm, re_h * mm, stroke=1, fill=0)
+
+    # 2) crop marks (interior cut lines only)
+    if not args.no_crop:
+        draw_crop_marks(c, re_x0, re_y0, re_x0 + re_w, re_y0 + re_h,
+                        page_w, page_h, args.crop_gap, args.crop_width)
+
+    # 3) horizontal ruling — WRITING AREA ONLY
+    c.setDash()
+    c.setLineWidth(args.ruling_width)
+    spacing = args.ruling
+    y = wa_y1 - spacing
+    while y > wa_y0 + EPS:
+        c.line(wa_x0 * mm, y * mm, wa_x1 * mm, y * mm)
+        y -= spacing
+
+    # 4) dashed writing-area border
+    c.setLineWidth(args.border_width)
+    c.setDash(2.0 * mm, 1.5 * mm)
+    c.rect(wa_x0 * mm, wa_y0 * mm,
+           (wa_x1 - wa_x0) * mm, (wa_y1 - wa_y0) * mm, stroke=1, fill=0)
+
+    # 5) label in the roomy bottom margin
+    if not args.no_label:
+        c.setDash()
+        label = f"{args.size}  •  {args.ruling:g} mm  •  {undersheet}-undersheet"
+        text_y = re_y0 + (bottom_m / 2.0) - (args.label_size / 2.0 / 72.0 * 25.4)
+        c.setFont("Helvetica", args.label_size)
+        c.drawCentredString(((wa_x0 + wa_x1) / 2.0) * mm, text_y * mm, label)
 
 
 def build_guide(args):
@@ -81,75 +147,30 @@ def build_guide(args):
             f"page {args.page} ({page_w}x{page_h} mm)."
         )
 
-    # position the real estate on the physical page
-    if args.center:                          # centered (printer-safe) mode
-        re_x0 = (page_w - re_w) / 2.0
-        re_y0 = (page_h - re_h) / 2.0
-    else:                                    # DEFAULT: flush to top-left -> 2 cuts
-        re_x0 = 0.0
-        re_y0 = page_h - re_h
-
-    # margins as fractions of the real-estate dimensions
-    top_m    = re_h * (1.0 / 9.0)
-    bottom_m = re_h * (2.0 / 9.0)
-    if args.undersheet == "right":          # default: wide margin on the right
-        left_m, right_m = re_w * (1.0 / 9.0), re_w * (2.0 / 9.0)
-    else:                                   # left undersheet -> swap L/R
-        left_m, right_m = re_w * (2.0 / 9.0), re_w * (1.0 / 9.0)
-
-    # writing area, page coordinates (mm). reportlab origin = bottom-left.
-    wa_x0 = re_x0 + left_m
-    wa_x1 = re_x0 + re_w - right_m
-    wa_y0 = re_y0 + bottom_m
-    wa_y1 = re_y0 + re_h - top_m
+    if args.double_sided:
+        sides = ["right", "left"]            # page 1 = right, page 2 = left
+        tag = "duplex"
+    else:
+        sides = [args.undersheet]
+        tag = args.undersheet
 
     out = args.output or (
-        f"guide_{args.size}_{args.ruling:g}mm_{args.undersheet}_"
+        f"guide_{args.size}_{args.ruling:g}mm_{tag}_"
         f"{'center' if args.center else 'flush'}_{args.page}.pdf"
     )
 
     c = canvas.Canvas(out, pagesize=(page_w * mm, page_h * mm))
-    c.setTitle(f"Guide {args.size} {args.ruling:g}mm {args.undersheet}-undersheet")
-    c.setStrokeColorRGB(0, 0, 0)            # pure black = darkest show-through
-    c.setFillColorRGB(0, 0, 0)
+    c.setTitle(f"Guide {args.size} {args.ruling:g}mm {tag}")
 
-    # 1) real-estate outline (alignment/trim aid) — solid, thin
-    if not args.no_frame:
-        c.setDash()                         # solid
-        c.setLineWidth(args.frame_width)
-        c.rect(re_x0 * mm, re_y0 * mm, re_w * mm, re_h * mm, stroke=1, fill=0)
+    for undersheet in sides:
+        render_page(c, args, undersheet)
+        c.showPage()
 
-    # 2) crop marks to the page edges (interior cut lines only)
-    if not args.no_crop:
-        draw_crop_marks(c, re_x0, re_y0, re_x0 + re_w, re_y0 + re_h,
-                        page_w, page_h, args.crop_gap, args.crop_width)
-
-    # 3) horizontal ruling lines — WRITING AREA ONLY
-    c.setDash()                             # solid
-    c.setLineWidth(args.ruling_width)
-    spacing = args.ruling
-    y = wa_y1 - spacing                      # first line one spacing below top
-    while y > wa_y0 + EPS:                    # stop before the bottom border
-        c.line(wa_x0 * mm, y * mm, wa_x1 * mm, y * mm)
-        y -= spacing
-
-    # 4) dashed border between margins and writing area — prominent
-    c.setLineWidth(args.border_width)
-    c.setDash(2.0 * mm, 1.5 * mm)            # 2 mm on, 1.5 mm off
-    c.rect(wa_x0 * mm, wa_y0 * mm,
-           (wa_x1 - wa_x0) * mm, (wa_y1 - wa_y0) * mm, stroke=1, fill=0)
-
-    # 5) label in the (roomy) bottom margin: size + ruling + undersheet
-    if not args.no_label:
-        c.setDash()
-        label = f"{args.size}  •  {args.ruling:g} mm  •  {args.undersheet}-undersheet"
-        text_y = re_y0 + (bottom_m / 2.0) - (args.label_size / 2.0 / 72.0 * 25.4)
-        c.setFont("Helvetica", args.label_size)
-        c.drawCentredString(((wa_x0 + wa_x1) / 2.0) * mm, text_y * mm, label)
-
-    c.showPage()
     c.save()
-    print(f"Wrote {out}")
+    if args.double_sided:
+        print(f"Wrote {out} (2 pages). Print DUPLEX with LONG-EDGE binding.")
+    else:
+        print(f"Wrote {out}")
 
 
 def parse_args():
@@ -158,10 +179,10 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python guide_sheet.py                       # A5, flush top-left, 2 cuts\n"
+            "  python guide_sheet.py                       # A5, right-undersheet, top-left, 2 cuts\n"
+            "  python guide_sheet.py --undersheet left     # top-right, 2 cuts\n"
+            "  python guide_sheet.py --double-sided        # 2-page duplex (long-edge)\n"
             "  python guide_sheet.py --center              # centered (printer-safe)\n"
-            "  python guide_sheet.py --size B5-JIS --ruling 6.5\n"
-            "  python guide_sheet.py --size A6 --crop-gap 0\n"
         ),
     )
     p.add_argument("--size", choices=REAL_ESTATE.keys(), default="A5",
@@ -169,12 +190,15 @@ def parse_args():
     p.add_argument("--ruling", type=float, choices=RULING_CHOICES, default=7.0,
                    metavar="MM", help="Ruling spacing in mm.")
     p.add_argument("--undersheet", choices=["right", "left"], default="right",
-                   help="Wide margin side ('right' = right-undersheet default).")
+                   help="Wide-margin side (ignored with --double-sided).")
+    p.add_argument("--double-sided", action="store_true",
+                   help="Produce a 2-page PDF: page 1 right-undersheet, page 2 "
+                        "left-undersheet, registered for LONG-EDGE duplex.")
     p.add_argument("--page", choices=PHYSICAL_PAGE.keys(), default="LETTER",
                    help="Physical sheet you print on.")
     p.add_argument("--center", action="store_true",
-                   help="Center the real estate on the page (for printers with "
-                        "edge-printing limits). Default is flush top-left = 2 cuts.")
+                   help="Center the real estate (for printers with edge-printing "
+                        "limits). Default is flush to top + side = fewer cuts.")
     p.add_argument("--ruling-width", type=float, default=0.6, metavar="PT",
                    help="Ruling line width in points.")
     p.add_argument("--border-width", type=float, default=1.2, metavar="PT",
@@ -183,15 +207,12 @@ def parse_args():
                    help="Real-estate outline width in points.")
     p.add_argument("--no-frame", action="store_true",
                    help="Do not draw the real-estate outline.")
-    # crop marks
     p.add_argument("--no-crop", action="store_true",
                    help="Do not draw crop/trim marks.")
     p.add_argument("--crop-gap", type=float, default=1.5, metavar="MM",
-                   help="Gap between the trim corner and the crop mark "
-                        "(set 0 to touch the trim line).")
+                   help="Gap between trim corner and crop mark (0 = touch line).")
     p.add_argument("--crop-width", type=float, default=0.5, metavar="PT",
                    help="Crop mark line width in points.")
-    # label
     p.add_argument("--no-label", action="store_true",
                    help="Do not print the size/ruling label.")
     p.add_argument("--label-size", type=float, default=8.0, metavar="PT",
