@@ -30,43 +30,64 @@ PHYSICAL_PAGE = {
 }
 
 RULING_CHOICES = [5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5]
+EPS = 1e-6
 
 
-def draw_crop_marks(c, x0, y0, x1, y1, page_w, page_h, gap_mm, width_pt):
-    """Crop marks extending from just outside each trim corner all the way
-    to the edges of the physical page (ideal for aligning on a cutter)."""
+def _clip(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def draw_crop_marks(c, tx0, ty0, tx1, ty1, page_w, page_h, gap, width):
+    """Draw crop marks that run to the page edges, but ONLY along trim edges
+    that are interior to the page. Anything off-page is clipped away, so a
+    flush top-left layout yields marks along the right & bottom cuts only."""
     c.setDash()
-    c.setLineWidth(width_pt)
-    g = gap_mm
-    corners = [
-        # (corner_x, corner_y, x_dir, y_dir)  dir = outward direction
-        (x0, y0, -1, -1),   # bottom-left
-        (x1, y0, +1, -1),   # bottom-right
-        (x0, y1, -1, +1),   # top-left
-        (x1, y1, +1, +1),   # top-right
-    ]
-    for cx, cy, sx, sy in corners:
-        # horizontal mark: from (corner + gap) outward to the page edge (0 or page_w)
-        x_edge = 0.0 if sx < 0 else page_w
-        c.line((cx + sx * g) * mm, cy * mm, x_edge * mm, cy * mm)
-        # vertical mark: from (corner + gap) outward to the page edge (0 or page_h)
-        y_edge = 0.0 if sy < 0 else page_h
-        c.line(cx * mm, (cy + sy * g) * mm, cx * mm, y_edge * mm)
+    c.setLineWidth(width)
+
+    interior_left   = tx0 > EPS
+    interior_right  = tx1 < page_w - EPS
+    interior_bottom = ty0 > EPS
+    interior_top    = ty1 < page_h - EPS
+
+    def vline(x, ya, yb):
+        ya, yb = _clip(ya, 0, page_h), _clip(yb, 0, page_h)
+        if abs(yb - ya) > EPS:
+            c.line(x * mm, ya * mm, x * mm, yb * mm)
+
+    def hline(y, xa, xb):
+        xa, xb = _clip(xa, 0, page_w), _clip(xb, 0, page_w)
+        if abs(xb - xa) > EPS:
+            c.line(xa * mm, y * mm, xb * mm, y * mm)
+
+    # vertical cut lines (left/right) -> vertical marks above & below trim box
+    for x, interior in ((tx0, interior_left), (tx1, interior_right)):
+        if interior:
+            vline(x, ty1 + gap, page_h)   # extend up to top edge
+            vline(x, ty0 - gap, 0)        # extend down to bottom edge
+    # horizontal cut lines (bottom/top) -> horizontal marks left & right of box
+    for y, interior in ((ty0, interior_bottom), (ty1, interior_top)):
+        if interior:
+            hline(y, tx1 + gap, page_w)   # extend right to right edge
+            hline(y, tx0 - gap, 0)        # extend left to left edge
 
 
 def build_guide(args):
     page_w, page_h = PHYSICAL_PAGE[args.page]
     re_w, re_h     = REAL_ESTATE[args.size]
 
-    if re_w > page_w + 1e-6 or re_h > page_h + 1e-6:
+    if re_w > page_w + EPS or re_h > page_h + EPS:
         raise SystemExit(
             f"Real estate {args.size} ({re_w}x{re_h} mm) does not fit on "
             f"page {args.page} ({page_w}x{page_h} mm)."
         )
 
-    # center the real estate on the physical page
-    re_x0 = (page_w - re_w) / 2.0
-    re_y0 = (page_h - re_h) / 2.0
+    # position the real estate on the physical page
+    if args.center:                          # centered (printer-safe) mode
+        re_x0 = (page_w - re_w) / 2.0
+        re_y0 = (page_h - re_h) / 2.0
+    else:                                    # DEFAULT: flush to top-left -> 2 cuts
+        re_x0 = 0.0
+        re_y0 = page_h - re_h
 
     # margins as fractions of the real-estate dimensions
     top_m    = re_h * (1.0 / 9.0)
@@ -83,7 +104,8 @@ def build_guide(args):
     wa_y1 = re_y0 + re_h - top_m
 
     out = args.output or (
-        f"guide_{args.size}_{args.ruling:g}mm_{args.undersheet}_{args.page}.pdf"
+        f"guide_{args.size}_{args.ruling:g}mm_{args.undersheet}_"
+        f"{'center' if args.center else 'flush'}_{args.page}.pdf"
     )
 
     c = canvas.Canvas(out, pagesize=(page_w * mm, page_h * mm))
@@ -97,7 +119,7 @@ def build_guide(args):
         c.setLineWidth(args.frame_width)
         c.rect(re_x0 * mm, re_y0 * mm, re_w * mm, re_h * mm, stroke=1, fill=0)
 
-    # 2) crop marks extending to the page edges
+    # 2) crop marks to the page edges (interior cut lines only)
     if not args.no_crop:
         draw_crop_marks(c, re_x0, re_y0, re_x0 + re_w, re_y0 + re_h,
                         page_w, page_h, args.crop_gap, args.crop_width)
@@ -106,9 +128,8 @@ def build_guide(args):
     c.setDash()                             # solid
     c.setLineWidth(args.ruling_width)
     spacing = args.ruling
-    eps = 1e-6
     y = wa_y1 - spacing                      # first line one spacing below top
-    while y > wa_y0 + eps:                   # stop before the bottom border
+    while y > wa_y0 + EPS:                    # stop before the bottom border
         c.line(wa_x0 * mm, y * mm, wa_x1 * mm, y * mm)
         y -= spacing
 
@@ -137,9 +158,9 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python guide_sheet.py                              # A5, 7mm, right-undersheet on LETTER\n"
+            "  python guide_sheet.py                       # A5, flush top-left, 2 cuts\n"
+            "  python guide_sheet.py --center              # centered (printer-safe)\n"
             "  python guide_sheet.py --size B5-JIS --ruling 6.5\n"
-            "  python guide_sheet.py --size B5-ISO --undersheet left\n"
             "  python guide_sheet.py --size A6 --crop-gap 0\n"
         ),
     )
@@ -150,7 +171,10 @@ def parse_args():
     p.add_argument("--undersheet", choices=["right", "left"], default="right",
                    help="Wide margin side ('right' = right-undersheet default).")
     p.add_argument("--page", choices=PHYSICAL_PAGE.keys(), default="LETTER",
-                   help="Physical sheet you print on; real estate is centered.")
+                   help="Physical sheet you print on.")
+    p.add_argument("--center", action="store_true",
+                   help="Center the real estate on the page (for printers with "
+                        "edge-printing limits). Default is flush top-left = 2 cuts.")
     p.add_argument("--ruling-width", type=float, default=0.6, metavar="PT",
                    help="Ruling line width in points.")
     p.add_argument("--border-width", type=float, default=1.2, metavar="PT",
@@ -159,7 +183,7 @@ def parse_args():
                    help="Real-estate outline width in points.")
     p.add_argument("--no-frame", action="store_true",
                    help="Do not draw the real-estate outline.")
-    # crop marks (now extend to page edges)
+    # crop marks
     p.add_argument("--no-crop", action="store_true",
                    help="Do not draw crop/trim marks.")
     p.add_argument("--crop-gap", type=float, default=1.5, metavar="MM",
