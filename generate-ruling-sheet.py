@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 guide_sheet.py — generate a printable ruling guide sheet to slip UNDER
-translucent paper (Tomoe River, Midori, etc.). Lines are pure black so
+translucent paper (Tomoe River, Midori MD, etc.). Lines are pure black so
 they show through the sheet on top.
 
 Requires:  pip install reportlab
@@ -32,11 +32,12 @@ PHYSICAL_PAGE = {
 RULING_CHOICES = [5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5]
 
 
-def draw_crop_marks(c, x0, y0, x1, y1, length_mm, gap_mm, width_pt):
-    """L-shaped crop marks just outside each corner of the trim box."""
+def draw_crop_marks(c, x0, y0, x1, y1, page_w, page_h, gap_mm, width_pt):
+    """Crop marks extending from just outside each trim corner all the way
+    to the edges of the physical page (ideal for aligning on a cutter)."""
     c.setDash()
     c.setLineWidth(width_pt)
-    L, g = length_mm, gap_mm
+    g = gap_mm
     corners = [
         # (corner_x, corner_y, x_dir, y_dir)  dir = outward direction
         (x0, y0, -1, -1),   # bottom-left
@@ -45,10 +46,12 @@ def draw_crop_marks(c, x0, y0, x1, y1, length_mm, gap_mm, width_pt):
         (x1, y1, +1, +1),   # top-right
     ]
     for cx, cy, sx, sy in corners:
-        # horizontal tick (extends outward in x)
-        c.line((cx + sx * g) * mm, cy * mm, (cx + sx * (g + L)) * mm, cy * mm)
-        # vertical tick (extends outward in y)
-        c.line(cx * mm, (cy + sy * g) * mm, cx * mm, (cy + sy * (g + L)) * mm)
+        # horizontal mark: from (corner + gap) outward to the page edge (0 or page_w)
+        x_edge = 0.0 if sx < 0 else page_w
+        c.line((cx + sx * g) * mm, cy * mm, x_edge * mm, cy * mm)
+        # vertical mark: from (corner + gap) outward to the page edge (0 or page_h)
+        y_edge = 0.0 if sy < 0 else page_h
+        c.line(cx * mm, (cy + sy * g) * mm, cx * mm, y_edge * mm)
 
 
 def build_guide(args):
@@ -94,10 +97,10 @@ def build_guide(args):
         c.setLineWidth(args.frame_width)
         c.rect(re_x0 * mm, re_y0 * mm, re_w * mm, re_h * mm, stroke=1, fill=0)
 
-    # 2) crop marks just outside the real-estate corners
+    # 2) crop marks extending to the page edges
     if not args.no_crop:
         draw_crop_marks(c, re_x0, re_y0, re_x0 + re_w, re_y0 + re_h,
-                        args.crop_length, args.crop_gap, args.crop_width)
+                        page_w, page_h, args.crop_gap, args.crop_width)
 
     # 3) horizontal ruling lines — WRITING AREA ONLY
     c.setDash()                             # solid
@@ -119,10 +122,8 @@ def build_guide(args):
     if not args.no_label:
         c.setDash()
         label = f"{args.size}  •  {args.ruling:g} mm  •  {args.undersheet}-undersheet"
-        # vertically center the text within the bottom margin band
         text_y = re_y0 + (bottom_m / 2.0) - (args.label_size / 2.0 / 72.0 * 25.4)
         c.setFont("Helvetica", args.label_size)
-        # center it under the writing area
         c.drawCentredString(((wa_x0 + wa_x1) / 2.0) * mm, text_y * mm, label)
 
     c.showPage()
@@ -139,7 +140,7 @@ def parse_args():
             "  python guide_sheet.py                              # A5, 7mm, right-undersheet on LETTER\n"
             "  python guide_sheet.py --size B5-JIS --ruling 6.5\n"
             "  python guide_sheet.py --size B5-ISO --undersheet left\n"
-            "  python guide_sheet.py --size A6 --page A6 --no-crop\n"
+            "  python guide_sheet.py --size A6 --crop-gap 0\n"
         ),
     )
     p.add_argument("--size", choices=REAL_ESTATE.keys(), default="A5",
@@ -158,13 +159,12 @@ def parse_args():
                    help="Real-estate outline width in points.")
     p.add_argument("--no-frame", action="store_true",
                    help="Do not draw the real-estate outline.")
-    # crop marks
+    # crop marks (now extend to page edges)
     p.add_argument("--no-crop", action="store_true",
                    help="Do not draw crop/trim marks.")
-    p.add_argument("--crop-length", type=float, default=4.0, metavar="MM",
-                   help="Length of each crop mark tick.")
     p.add_argument("--crop-gap", type=float, default=1.5, metavar="MM",
-                   help="Gap between the trim corner and the crop mark.")
+                   help="Gap between the trim corner and the crop mark "
+                        "(set 0 to touch the trim line).")
     p.add_argument("--crop-width", type=float, default=0.5, metavar="PT",
                    help="Crop mark line width in points.")
     # label
