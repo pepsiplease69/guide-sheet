@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 """
 guide_sheet.py — printable ruling guide sheet to slip UNDER translucent
 paper (Tomoe River, Midori MD, etc.). Lines are pure black for show-through.
